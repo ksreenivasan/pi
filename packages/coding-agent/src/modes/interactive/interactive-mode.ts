@@ -595,6 +595,7 @@ export class InteractiveMode {
 		this.defaultEditor = new CustomEditor(this.ui, getEditorTheme(), this.keybindings, {
 			paddingX: editorPaddingX,
 			autocompleteMaxVisible,
+			promptPrefix: "❯ ",
 		});
 		this.editor = this.defaultEditor;
 		this.editorContainer = new Container();

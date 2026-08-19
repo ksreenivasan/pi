@@ -725,6 +725,42 @@ describe("Editor component", () => {
 		});
 	});
 
+	describe("Prompt prefix", () => {
+		it("renders a prompt token before the first editor line", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme, { promptPrefix: "> " });
+			editor.setText("hello");
+
+			const lines = editor.render(12);
+			const contentLine = stripVTControlCharacters(lines[1]!);
+
+			assert.ok(contentLine.startsWith("> hello"));
+			assert.strictEqual(visibleWidth(lines[1]!), 12);
+		});
+
+		it("resets ANSI styling before rendering editor text", () => {
+			const editor = new Editor(createTestTUI(), defaultEditorTheme, { promptPrefix: "\x1b[31mABCD\x1b[0m" });
+			editor.setText("hello");
+
+			const contentLine = editor.render(8)[1]!;
+
+			assert.ok(contentLine.startsWith("\x1b[31mABCD\x1b[0mhe"));
+			assert.strictEqual(visibleWidth(contentLine), 8);
+		});
+
+		it("keeps prefixed content within narrow terminal widths", () => {
+			for (const promptPrefix of ["❯ ", "✅ "]) {
+				const editor = new Editor(createTestTUI(), defaultEditorTheme, { promptPrefix });
+				editor.setText("x");
+
+				for (const width of [2, 3]) {
+					for (const line of editor.render(width)) {
+						assert.strictEqual(visibleWidth(line), width, `line exceeds width ${width}: ${JSON.stringify(line)}`);
+					}
+				}
+			}
+		});
+	});
+
 	describe("Grapheme-aware text wrapping", () => {
 		it("wraps lines correctly when text contains wide emojis", () => {
 			const editor = new Editor(createTestTUI(), defaultEditorTheme);
