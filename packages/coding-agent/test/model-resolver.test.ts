@@ -1,6 +1,7 @@
 import type { Model } from "@earendil-works/pi-ai";
 import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import { describe, expect, test, vi } from "vitest";
+import { DEFAULT_THINKING_LEVEL } from "../src/core/defaults.ts";
 import {
 	defaultModelPerProvider,
 	findInitialModel,
@@ -697,7 +698,7 @@ describe("resolveCliModel", () => {
 describe("default model selection", () => {
 	test("openai defaults track current models", () => {
 		expect(defaultModelPerProvider.openai).toBe("gpt-5.5");
-		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
+		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.6-sol");
 	});
 
 	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
@@ -774,6 +775,7 @@ describe("default model selection", () => {
 
 		expect(result.model?.provider).toBe("vercel-ai-gateway");
 		expect(result.model?.id).toBe("anthropic/claude-opus-4-6");
+		expect(result.thinkingLevel).toBe(DEFAULT_THINKING_LEVEL);
 	});
 
 	test("findInitialModel ignores an unauthenticated saved default", async () => {

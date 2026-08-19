@@ -1029,6 +1029,55 @@ describe("openai-codex streaming", () => {
 		expect(requestedReasoning).toEqual({ effort: "low", summary: "auto" });
 	});
 
+	it("requests Codex priority service tier by default", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
+		process.env.PI_CODING_AGENT_DIR = tempDir;
+		const token = mockToken();
+		let capturedPayload: { service_tier?: string | null } | undefined;
+		const encoder = new TextEncoder();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(encoder.encode(buildSSEPayload({ status: "completed" })));
+							controller.close();
+						},
+					}),
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			}),
+		);
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const context: Context = {
+			systemPrompt: "You are a helpful assistant.",
+			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
+		};
+
+		await streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			transport: "sse",
+			onPayload: (payload) => {
+				capturedPayload = payload as { service_tier?: string | null };
+			},
+		}).result();
+
+		expect(capturedPayload?.service_tier).toBe("priority");
+	});
+
 	it.each([
 		["gpt-5.1-codex", "flex", 0.5],
 		["gpt-5.1-codex", "priority", 2],

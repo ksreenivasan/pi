@@ -5,6 +5,11 @@
 ### Added
 
 - Added transcript usage notices for compaction and branch summaries when cache miss notices are enabled.
+- Added a prompt marker to the interactive editor.
+
+### Changed
+
+- Changed the default thinking level to high and the default OpenAI Codex model to GPT-5.6 Sol.
 
 ### Fixed
 

@@ -45,6 +45,7 @@ import { buildBaseOptions } from "./simple-options.ts";
 const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM_PATH = "https://api.openai.com/auth" as const;
 const DEFAULT_MAX_RETRIES = 0;
+const DEFAULT_CODEX_SERVICE_TIER: ResponseCreateParamsStreaming["service_tier"] = "priority";
 const BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
@@ -563,8 +564,9 @@ function buildRequestBody(
 		body.temperature = options.temperature;
 	}
 
-	if (options?.serviceTier !== undefined) {
-		body.service_tier = options.serviceTier;
+	const serviceTier = getCodexServiceTier(options);
+	if (serviceTier !== undefined) {
+		body.service_tier = serviceTier;
 	}
 
 	if (toolPlacement.immediate.length > 0) {
@@ -589,6 +591,12 @@ function buildRequestBody(
 	}
 
 	return body;
+}
+
+function getCodexServiceTier(
+	options?: Pick<OpenAICodexResponsesOptions, "serviceTier">,
+): ResponseCreateParamsStreaming["service_tier"] | undefined {
+	return options?.serviceTier === undefined ? DEFAULT_CODEX_SERVICE_TIER : options.serviceTier;
 }
 
 function getServiceTierCostMultiplier(
@@ -658,7 +666,7 @@ async function processStream(
 	options?: OpenAICodexResponsesOptions,
 ): Promise<void> {
 	await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal), output), output, stream, model, {
-		serviceTier: options?.serviceTier,
+		serviceTier: getCodexServiceTier(options),
 		grammarToolInputProperties,
 		resolveServiceTier: resolveCodexServiceTier,
 		applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
@@ -1512,7 +1520,7 @@ async function processWebSocketStream(
 			stream,
 			model,
 			{
-				serviceTier: options?.serviceTier,
+				serviceTier: getCodexServiceTier(options),
 				grammarToolInputProperties,
 				resolveServiceTier: resolveCodexServiceTier,
 				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
