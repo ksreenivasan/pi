@@ -1,6 +1,6 @@
 import type { Component, Terminal, TUI } from "@earendil-works/pi-tui";
-import { Container, isViewportTUI, Text } from "@earendil-works/pi-tui";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Container, isViewportTUI, resetCapabilitiesCache, setCapabilities, Text } from "@earendil-works/pi-tui";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal.ts";
 import type { FullscreenExitOutput, TuiMode } from "../src/core/settings-manager.ts";
 import {
@@ -15,6 +15,10 @@ const clipboardMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/utils/clipboard.ts", () => clipboardMocks);
+
+afterEach(() => {
+	resetCapabilitiesCache();
+});
 
 class RecordingTerminal extends VirtualTerminal implements Terminal {
 	readonly writes: string[] = [];
@@ -69,6 +73,7 @@ describe("createInteractiveTui", () => {
 	});
 
 	it("replaces the renderer and restores the previous screen for resume-hint exits", async () => {
+		setCapabilities({ images: null, trueColor: true, hyperlinks: true });
 		const terminal = new RecordingTerminal(40, 8);
 		const renderer = createInteractiveTui({
 			tuiMode: "regular",
