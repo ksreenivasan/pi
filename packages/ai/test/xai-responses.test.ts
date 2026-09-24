@@ -7,6 +7,7 @@ import { getSupportedThinkingLevels } from "../src/models.ts";
 import { XAI_MODELS } from "../src/providers/xai.models.ts";
 import { xaiProvider } from "../src/providers/xai.ts";
 import type { Context, Model } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 const PI_USER_AGENT = `pi (${platform()} ${release()}; ${arch()})`;
 
@@ -38,6 +39,53 @@ function completedResponse(): Response {
 	});
 }
 
+const customCompletionsModel: Model<"openai-completions"> = {
+	id: "grok-custom",
+	name: "Grok Custom",
+	api: "openai-completions",
+	provider: "xai",
+	baseUrl: "https://api.x.ai/v1",
+	reasoning: false,
+	input: ["text"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128000,
+	maxTokens: 16384,
+};
+
+async function captureCompletionsUserAgent(headers?: Record<string, string>): Promise<string | null> {
+	let userAgent: string | null = null;
+	vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+		userAgent = new Request(input, init).headers.get("user-agent");
+		const chunks = [
+			{ id: "chatcmpl-ua", choices: [{ delta: { content: "ok" }, finish_reason: null, index: 0 }] },
+			{
+				id: "chatcmpl-ua",
+				choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
+				usage: {
+					prompt_tokens: 1,
+					completion_tokens: 1,
+					prompt_tokens_details: { cached_tokens: 0 },
+					completion_tokens_details: { reasoning_tokens: 0 },
+				},
+			},
+		];
+		const body = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}`).join("\n\n")}\n\ndata: [DONE]\n\n`;
+		return new Response(body, {
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+		});
+	});
+
+	const result = await streamOpenAICompletions(
+		customCompletionsModel,
+		normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }),
+		{ apiKey: "xai-test-token", headers },
+	).result();
+
+	expect(result.stopReason, result.errorMessage).toBe("stop");
+	return userAgent;
+}
+
 async function captureRequest(
 	model: Model<"openai-responses">,
 	context: Context,
@@ -54,7 +102,7 @@ async function captureRequest(
 		return completedResponse();
 	});
 
-	const result = await xaiProvider().stream(model, context, options).result();
+	const result = await xaiProvider().stream(model, normalizeContext(context), options).result();
 	expect(result.stopReason, result.errorMessage).toBe("stop");
 	expect(captured).toBeDefined();
 	return captured!;
@@ -71,6 +119,7 @@ describe("xAI Responses provider", () => {
 			"grok-3-fast",
 			"grok-4.20-0309-non-reasoning",
 			"grok-4.20-0309-reasoning",
+			"grok-build-0.1",
 			"grok-code-fast-1",
 		]) {
 			expect(Object.keys(XAI_MODELS)).not.toContain(modelId);
@@ -83,8 +132,33 @@ describe("xAI Responses provider", () => {
 		}
 		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.5"])).toEqual(["low", "medium", "high"]);
 		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.6"])).toEqual(["low", "medium", "high", "xhigh"]);
+		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
 		expect(getSupportedThinkingLevels(XAI_MODELS["grok-4.3"])).toEqual(["off", "low", "medium", "high"]);
-		expect(getSupportedThinkingLevels(XAI_MODELS["grok-build-0.1"])).toEqual(["low", "medium", "high"]);
+	});
+
+	it("includes Grok 4.7 capabilities and long-context pricing", () => {
+		expect(XAI_MODELS["grok-4.7"]).toMatchObject({
+			api: "openai-responses",
+			reasoning: true,
+			input: ["text", "image"],
+			contextWindow: 500000,
+			maxTokens: 500000,
+			cost: {
+				input: 2,
+				output: 6,
+				cacheRead: 0.5,
+				cacheWrite: 0,
+				tiers: [
+					{
+						inputTokensAbove: 200000,
+						input: 4,
+						output: 12,
+						cacheRead: 1,
+						cacheWrite: 0,
+					},
+				],
+			},
+		});
 	});
 
 	it("uses /responses with bearer auth and xAI-compatible request fields", async () => {
@@ -140,9 +214,9 @@ describe("xAI Responses provider", () => {
 		expect(captured.body).not.toHaveProperty("reasoning");
 	});
 
-	it("uses /responses for Grok 4.6 with xhigh effort and encrypted reasoning", async () => {
+	it("uses /responses for Grok 4.7 with xhigh effort and encrypted reasoning", async () => {
 		const captured = await captureRequest(
-			XAI_MODELS["grok-4.6"],
+			XAI_MODELS["grok-4.7"],
 			{
 				systemPrompt: "You are a careful coding assistant.",
 				messages: [{ role: "user", content: "hello", timestamp: 1 }],
@@ -155,7 +229,7 @@ describe("xAI Responses provider", () => {
 
 		expect(captured.url).toBe("https://api.x.ai/v1/responses");
 		expect(captured.body).toMatchObject({
-			model: "grok-4.6",
+			model: "grok-4.7",
 			store: false,
 			stream: true,
 			reasoning: { effort: "xhigh" },
@@ -184,7 +258,7 @@ describe("xAI Responses provider", () => {
 		});
 	});
 
-	it("keeps the SDK User-Agent for non-xAI Responses requests", async () => {
+	it("uses pi's User-Agent by default for Responses requests", async () => {
 		let userAgent: string | null = null;
 		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
 			userAgent = new Request(input, init).headers.get("user-agent");
@@ -198,58 +272,29 @@ describe("xAI Responses provider", () => {
 		};
 		const result = await streamOpenAIResponses(
 			openaiModel,
-			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+			normalizeContext({ messages: [{ role: "user", content: "hello", timestamp: 1 }] }),
 			{ apiKey: "test-token" },
 		).result();
 
 		expect(result.stopReason, result.errorMessage).toBe("stop");
-		expect(userAgent).not.toBeNull();
-		expect(userAgent).not.toBe(PI_USER_AGENT);
+		expect(userAgent).toBe(PI_USER_AGENT);
 	});
 
-	it("forces pi's User-Agent on custom xAI Completions models over caller headers", async () => {
-		let userAgent: string | null = null;
-		vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-			userAgent = new Request(input, init).headers.get("user-agent");
-			const chunks = [
-				{ id: "chatcmpl-ua", choices: [{ delta: { content: "ok" }, finish_reason: null, index: 0 }] },
-				{
-					id: "chatcmpl-ua",
-					choices: [{ delta: {}, finish_reason: "stop", index: 0 }],
-					usage: {
-						prompt_tokens: 1,
-						completion_tokens: 1,
-						prompt_tokens_details: { cached_tokens: 0 },
-						completion_tokens_details: { reasoning_tokens: 0 },
-					},
-				},
-			];
-			const body = `${chunks.map((chunk) => `data: ${JSON.stringify(chunk)}`).join("\n\n")}\n\ndata: [DONE]\n\n`;
-			return new Response(body, {
-				status: 200,
-				headers: { "content-type": "text/event-stream" },
-			});
-		});
-
-		const customModel: Model<"openai-completions"> = {
-			id: "grok-custom",
-			name: "Grok Custom",
-			api: "openai-completions",
-			provider: "xai",
-			baseUrl: "https://api.x.ai/v1",
-			reasoning: false,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 128000,
-			maxTokens: 16384,
-		};
-		const result = await streamOpenAICompletions(
-			customModel,
+	it("lets explicit headers override the default Responses User-Agent", async () => {
+		const captured = await captureRequest(
+			XAI_MODELS["grok-4.5"],
 			{ messages: [{ role: "user", content: "hello", timestamp: 1 }] },
 			{ apiKey: "xai-test-token", headers: { "User-Agent": "custom-agent" } },
-		).result();
+		);
 
-		expect(result.stopReason, result.errorMessage).toBe("stop");
-		expect(userAgent).toBe(PI_USER_AGENT);
+		expect(captured.headers.get("user-agent")).toBe("custom-agent");
+	});
+
+	it("uses pi's User-Agent by default for Completions requests", async () => {
+		expect(await captureCompletionsUserAgent()).toBe(PI_USER_AGENT);
+	});
+
+	it("lets explicit headers override the default Completions User-Agent", async () => {
+		expect(await captureCompletionsUserAgent({ "User-Agent": "custom-agent" })).toBe("custom-agent");
 	});
 });

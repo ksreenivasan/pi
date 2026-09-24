@@ -1,6 +1,16 @@
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	globSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 
 function getEnv(): NodeJS.ProcessEnv {
@@ -24,7 +34,6 @@ function getEnv(): NodeJS.ProcessEnv {
 
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
-import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
@@ -32,6 +41,7 @@ import { CONFIG_DIR_NAME } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
+import { stripBom } from "../utils/text.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
 import { type PiManifest, readPiManifest } from "./pi-manifest.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
@@ -59,6 +69,7 @@ export interface PathMetadata {
 	scope: SourceScope;
 	origin: "package" | "top-level";
 	baseDir?: string;
+	packageRoot?: string;
 }
 
 export interface ResolvedResource {
@@ -272,6 +283,18 @@ function isOverridePattern(s: string): boolean {
 
 function hasGlobPattern(s: string): boolean {
 	return s.includes("*") || s.includes("?");
+}
+
+/** Glob entries discover visible paths; exact entries can target dot paths or symlinked trees. */
+function expandPackageGlob(pattern: string, root: string): string[] {
+	return globSync(pattern, { cwd: root })
+		.map((match) => resolve(root, match))
+		.filter((path) =>
+			relative(root, path)
+				.split(sep)
+				.every((segment) => segment === ".." || !segment.startsWith(".")),
+		)
+		.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 
 function splitPatterns(entries: string[]): { plain: string[]; patterns: string[] } {
@@ -1269,6 +1292,7 @@ export class DefaultPackageManager implements PackageManager {
 					installedPath = this.getNpmInstallPath(parsed, resolvedScope);
 				}
 				metadata.baseDir = installedPath;
+				metadata.packageRoot = installedPath;
 				this.collectPackageResources(installedPath, accumulator, filter, metadata);
 				continue;
 			}
@@ -1282,6 +1306,7 @@ export class DefaultPackageManager implements PackageManager {
 					await this.refreshTemporaryGitSource(parsed, resolvedSource);
 				}
 				metadata.baseDir = installedPath;
+				metadata.packageRoot = installedPath;
 				this.collectPackageResources(installedPath, accumulator, filter, metadata);
 			}
 		}
@@ -1323,6 +1348,7 @@ export class DefaultPackageManager implements PackageManager {
 			}
 			if (stats.isDirectory()) {
 				metadata.baseDir = resolved;
+				metadata.packageRoot = resolved;
 				const resources = this.collectPackageResources(resolved, accumulator, filter, metadata);
 				if (!resources) {
 					this.addResource(accumulator.extensions, resolved, metadata, true);
@@ -1479,7 +1505,7 @@ export class DefaultPackageManager implements PackageManager {
 		if (!existsSync(packageJsonPath)) return undefined;
 		try {
 			const content = readFileSync(packageJsonPath, "utf-8");
-			const pkg = JSON.parse(content) as { version?: string };
+			const pkg = JSON.parse(stripBom(content)) as { version?: string };
 			return pkg.version;
 		} catch {
 			return undefined;
@@ -1736,10 +1762,25 @@ export class DefaultPackageManager implements PackageManager {
 
 	private getPackageManagerName(): string {
 		const npmCommand = this.getNpmCommand();
-		const commandParts = [npmCommand.command, ...npmCommand.args];
-		const separatorIndex = commandParts.lastIndexOf("--");
-		const packageManagerCommand = separatorIndex >= 0 ? commandParts[separatorIndex + 1] : npmCommand.command;
-		return packageManagerCommand ? basename(packageManagerCommand).replace(/\.(cmd|exe)$/i, "") : "";
+		const normalizeCommandName = (command: string): string => basename(command).replace(/\.(cmd|exe)$/i, "");
+		const supportedPackageManagers = new Set(["npm", "pnpm", "bun"]);
+		const directCommand = normalizeCommandName(npmCommand.command);
+		const separatorIndex = npmCommand.args.lastIndexOf("--");
+		if (separatorIndex >= 0) {
+			const wrappedCommand = npmCommand.args[separatorIndex + 1];
+			return wrappedCommand ? normalizeCommandName(wrappedCommand) : directCommand;
+		}
+		if (supportedPackageManagers.has(directCommand)) return directCommand;
+
+		const wrappedPackageManagers = [
+			...new Set(
+				npmCommand.args.map(normalizeCommandName).filter((command) => supportedPackageManagers.has(command)),
+			),
+		];
+		if (wrappedPackageManagers.length > 1) {
+			throw new Error(`Ambiguous npmCommand package managers: ${wrappedPackageManagers.join(", ")}`);
+		}
+		return wrappedPackageManagers[0] ?? directCommand;
 	}
 
 	private async runNpmCommand(args: string[], options?: { cwd?: string }): Promise<void> {
@@ -1748,11 +1789,22 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private getGitDependencyInstallArgs(): string[] {
-		const configuredCommand = this.settingsManager.getNpmCommand();
-		if (configuredCommand && configuredCommand.length > 0) {
-			return ["install"];
+		switch (this.getPackageManagerName()) {
+			case "bun":
+				return ["install", "--omit=dev", "--omit=peer"];
+			case "pnpm":
+				return [
+					"install",
+					"--prod",
+					"--config.auto-install-peers=false",
+					"--config.strict-peer-dependencies=false",
+					"--config.strict-dep-builds=false",
+				];
+			case "npm":
+				return ["install", "--omit=dev", "--legacy-peer-deps"];
+			default:
+				return ["install"];
 		}
-		return ["install", "--omit=dev"];
 	}
 
 	private runNpmCommandSync(args: string[]): string {
@@ -1861,7 +1913,7 @@ export class DefaultPackageManager implements PackageManager {
 		if (!existsSync(packageJsonPath)) return false;
 
 		try {
-			const manifest = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { dependencies?: unknown };
+			const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8"))) as { dependencies?: unknown };
 			if (
 				!manifest.dependencies ||
 				typeof manifest.dependencies !== "object" ||
@@ -2299,12 +2351,7 @@ export class DefaultPackageManager implements PackageManager {
 				return [resolve(root, entry)];
 			}
 
-			return globSync(entry, {
-				cwd: root,
-				absolute: true,
-				dot: false,
-				nodir: false,
-			}).map((match) => resolve(match));
+			return expandPackageGlob(entry, root);
 		});
 		return this.collectFilesFromPaths(resolved, resourceType);
 	}
