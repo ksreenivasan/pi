@@ -111,7 +111,8 @@ describe("getSupportedThinkingLevels", () => {
 						},
 					],
 				},
-				contextWindow: 272000,
+				// This fork pins the OpenAI Codex context limits to 512k (see generate-models.ts).
+				contextWindow: provider === "openai-codex" ? 512000 : 272000,
 				maxTokens: 128000,
 				compat: {
 					supportsAdditionalTools: true,
