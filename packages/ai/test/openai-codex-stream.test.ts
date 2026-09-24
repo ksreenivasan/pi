@@ -1115,10 +1115,10 @@ describe("openai-codex streaming", () => {
 			contextWindow: 400000,
 			maxTokens: 128000,
 		};
-		const context: Context = {
+		const context = normalizeContext({
 			systemPrompt: "You are a helpful assistant.",
 			messages: [{ role: "user", content: "Say hello", timestamp: Date.now() }],
-		};
+		});
 
 		await streamOpenAICodexResponses(model, context, {
 			apiKey: token,
